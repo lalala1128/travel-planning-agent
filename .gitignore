@@ -1,0 +1,15 @@
+.venv/
+.venv-broken-*/
+.env
+__pycache__/
+*.pyc
+.idea/
+.idea-old-*/
+.pytest_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+data/
+reports/*.json
+app/routers_old_backup/
+app/storage.py

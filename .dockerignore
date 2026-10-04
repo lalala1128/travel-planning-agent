@@ -1,0 +1,17 @@
+.git
+.gitignore
+.idea
+.idea-old-*
+.venv
+.venv-broken-*
+__pycache__
+*.pyc
+.pytest_cache
+.coverage
+htmlcov
+data
+.env
+tests
+app/routers_old_backup
+app/study.py
+app/storage.py

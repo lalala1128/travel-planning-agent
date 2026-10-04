@@ -1,0 +1,32 @@
+[
+  {
+    "query": "长沙测试预算是多少",
+    "city": "长沙",
+    "expected_terms": ["每人每天", "260 元"],
+    "should_match": true
+  },
+  {
+    "query": "岳麓人文线包括哪些地点",
+    "city": "长沙",
+    "expected_terms": ["湖南大学", "岳麓书院", "爱晚亭"],
+    "should_match": true
+  },
+  {
+    "query": "长沙早餐推荐什么",
+    "city": "长沙",
+    "expected_terms": ["长沙米粉"],
+    "should_match": true
+  },
+  {
+    "query": "星城橘影-CS260",
+    "city": "长沙",
+    "expected_terms": ["星城橘影-CS260"],
+    "should_match": true
+  },
+  {
+    "query": "Python虚拟环境怎么创建",
+    "city": "长沙",
+    "expected_terms": [],
+    "should_match": false
+  }
+]
