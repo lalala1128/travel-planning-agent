@@ -2,6 +2,7 @@ from typing import Annotated
 
 from fastapi import (
     APIRouter,
+    Depends,
     File,
     Form,
     HTTPException,
@@ -10,6 +11,8 @@ from fastapi import (
     status,
 )
 
+from ..auth import get_current_tenant
+from ..models import Tenant
 from ..schemas import (
     KnowledgeAnswerResponse,
     KnowledgeAskRequest,
@@ -39,6 +42,7 @@ MAX_UPLOAD_SIZE = 10 * 1024 * 1024
 def upload_document(
     file: Annotated[UploadFile, File()],
     city: Annotated[str | None, Form()] = None,
+    tenant: Tenant = Depends(get_current_tenant),
 ):
     filename = file.filename or "document.txt"
     content = file.file.read(MAX_UPLOAD_SIZE + 1)
@@ -51,6 +55,7 @@ def upload_document(
 
     try:
         chunks = get_rag_service().ingest(
+            tenant_id=tenant.id,
             filename=filename,
             content=content,
             city=city,
@@ -81,6 +86,7 @@ def search_documents(
     query: str = Query(min_length=2, max_length=200),
     city: str | None = Query(default=None, max_length=50),
     limit: int = Query(default=5, ge=1, le=10),
+    tenant: Tenant = Depends(get_current_tenant),
 ):
     try:
         analysis = rewrite_search_query_safely(
@@ -92,6 +98,7 @@ def search_documents(
             results = []
         else:
             results = get_rag_service().search(
+                tenant_id=tenant.id,
                 query=analysis.rewritten_query,
                 city=city,
                 limit=limit,
@@ -115,6 +122,7 @@ def search_documents(
 )
 def ask_knowledge(
     payload: KnowledgeAskRequest,
+    tenant: Tenant = Depends(get_current_tenant),
 ):
     try:
         analysis = rewrite_search_query_safely(
@@ -136,6 +144,7 @@ def ask_knowledge(
             }
 
         results = get_rag_service().search(
+            tenant_id=tenant.id,
             query=analysis.rewritten_query,
             city=payload.city,
             limit=payload.limit,

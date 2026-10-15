@@ -108,6 +108,7 @@ def knowledge_node(state: TravelState) -> dict:
 
     try:
         results = get_rag_service().search(
+            tenant_id=trip.tenant_id,
             query=query,
             city=trip.destination,
             limit=5,

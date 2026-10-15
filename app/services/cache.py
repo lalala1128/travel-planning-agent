@@ -3,8 +3,9 @@ import os
 from hashlib import sha256
 from pathlib import Path
 from threading import Lock
-from time import monotonic, time
+from time import monotonic, sleep, time
 from typing import Any
+from uuid import uuid4
 
 from redis import Redis
 from redis.exceptions import RedisError
@@ -69,7 +70,7 @@ class FileTTLCache:
 
     def set(self, key: str, value: str, ttl: int) -> None:
         path = self._path(key)
-        temporary = path.with_suffix(".tmp")
+        temporary = path.with_name(f"{path.name}.{uuid4().hex}.tmp")
         payload = json.dumps(
             {
                 "expires_at": time() + ttl,
@@ -79,8 +80,18 @@ class FileTTLCache:
         )
 
         with self._lock:
-            temporary.write_text(payload, encoding="utf-8")
-            temporary.replace(path)
+            try:
+                temporary.write_text(payload, encoding="utf-8")
+                for attempt in range(5):
+                    try:
+                        temporary.replace(path)
+                        break
+                    except PermissionError:
+                        if attempt == 4:
+                            raise
+                        sleep(0.01 * 2**attempt)
+            finally:
+                temporary.unlink(missing_ok=True)
 
     def delete(self, key: str) -> None:
         with self._lock:

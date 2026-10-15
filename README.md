@@ -10,6 +10,7 @@
 - **执行过程可观察**：支持同步生成、SSE 流式进度、Redis 状态、MySQL 执行记录和失败原因。
 - **结果可追溯**：每次成功生成都会保存计划版本，可以查询历史并恢复旧版本。
 - **工程化可交付**：Alembic 管理数据库结构，Docker Compose 启动完整依赖，pytest 和 GitHub Actions 提供回归保障。
+- **客户空间隔离**：API Key 鉴权，旅行、版本、执行记录和知识文档按客户空间隔离。
 
 ## 系统架构
 
@@ -58,8 +59,14 @@ weather -> attractions -> route -> knowledge -> generate_plan -> validate_plan
 
 要求 Docker Desktop 已启动，并使用 Linux 容器。
 
+### 从旧版本升级
+
+如果现有数据库中已有旅行记录，先备份 MySQL 和 Qdrant。升级前在 `.env` 设置一个至少 32 字符的随机 `LEGACY_TENANT_API_KEY`。迁移会把旧旅行记录归入 `legacy` 客户空间；若没有配置密钥，迁移会拒绝执行，避免旧数据被无意开放。保存该密钥，并在请求头 `X-API-Key` 中使用它访问旧数据。全新数据库不需要此配置。
+
+旧 Qdrant 文档没有客户空间标记，升级后不会出现在任何客户的检索结果中。使用对应客户密钥重新上传文档；旧向量需要由管理员在确认备份后清理。
+
 ```powershell
-Copy-Item .env.example .env
+if (-not (Test-Path .env)) { Copy-Item .env.example .env }
 ```
 
 编辑 `.env`，至少填写 `DB_PASSWORD`、`MYSQL_ROOT_PASSWORD` 和 `DEEPSEEK_API_KEY`。如果容器必须经过 Windows 主机上的代理访问外网，再取消下面配置的注释并按实际端口修改：
@@ -74,6 +81,21 @@ OUTBOUND_PROXY=http://host.docker.internal:7897
 docker compose up -d --build
 docker compose ps
 docker compose logs -f api
+```
+
+创建一个客户空间。密钥只在创建时输出一次，请妥善保存；轮换密钥会立即使旧密钥失效。
+
+```powershell
+docker compose exec api python -m scripts.manage_tenants create demo
+docker compose exec api python -m scripts.manage_tenants rotate 1
+```
+
+除 `/health` 和 API 文档外，业务接口都需要 `X-API-Key` 请求头。在 Swagger UI 中点击 **Authorize** 填入密钥。PowerShell 示例：
+
+```powershell
+$apiKey = "<创建客户空间时输出的密钥>"
+$headers = @{ "X-API-Key" = $apiKey }
+Invoke-RestMethod http://127.0.0.1:8000/trips -Headers $headers
 ```
 
 - Swagger UI: <http://127.0.0.1:8000/docs>
@@ -96,8 +118,9 @@ docker compose down
 ```powershell
 conda create --prefix .\.venv python=3.12 pip -y
 .\.venv\python.exe -m pip install -r requirements-dev.txt
-Copy-Item .env.example .env
+if (-not (Test-Path .env)) { Copy-Item .env.example .env }
 .\.venv\python.exe -m alembic upgrade head
+.\.venv\python.exe -m scripts.manage_tenants create demo
 .\.venv\python.exe -m uvicorn app.main:app --reload
 ```
 
@@ -112,10 +135,13 @@ Copy-Item .env.example .env
 7. `GET /trips/{trip_id}/executions` 查看同步/流式执行记录和失败原因。
 8. `POST /trips/{trip_id}/plans/{version}/restore` 演示版本恢复。
 
+规划进行中，恢复、编辑、删除旅行会返回 409。旅行状态由服务端管理；`PATCH /trips/{trip_id}/status` 只允许重置为 `draft`。
+
 知识库上传示例：
 
 ```powershell
 curl.exe -X POST http://127.0.0.1:8000/knowledge/documents `
+  -H "X-API-Key: $apiKey" `
   -F "file=@.\knowledge\chengdu.md" `
   -F "city=成都"
 ```
@@ -123,7 +149,7 @@ curl.exe -X POST http://127.0.0.1:8000/knowledge/documents `
 SSE 调用示例：
 
 ```powershell
-curl.exe -N -X POST http://127.0.0.1:8000/trips/1/generate-plan/stream
+curl.exe -N -X POST http://127.0.0.1:8000/trips/1/generate-plan/stream -H "X-API-Key: $apiKey"
 ```
 
 完整的讲解顺序、演示命令和高频问答见 [面试演示手册](docs/INTERVIEW_GUIDE.md)。
@@ -154,13 +180,13 @@ curl.exe -N -X POST http://127.0.0.1:8000/trips/1/generate-plan/stream
 RAG 检索评估：
 
 ```powershell
-.\.venv\python.exe -m scripts.evaluate_rag
+.\.venv\python.exe -m scripts.evaluate_rag --tenant-id 1
 ```
 
 完整工作流评估会调用真实天气、景点、RAG 和大模型服务，因此会产生外部请求：
 
 ```powershell
-.\.venv\python.exe -m scripts.evaluate --limit 5
+.\.venv\python.exe -m scripts.evaluate --tenant-id 1 --limit 5
 ```
 
 结果写入 `reports/evaluation.json`。简历中的成功率和延迟指标应以最新真实报告为准。
@@ -170,6 +196,8 @@ RAG 检索评估：
 | Variable | Purpose |
 | --- | --- |
 | `DB_*` | MySQL 连接配置 |
+| `DB_ECHO` | 是否输出 SQL 调试日志，默认关闭 |
+| `LEGACY_TENANT_API_KEY` | 旧数据库迁移时的旧数据访问密钥；已有旅行记录时必须设置 |
 | `MYSQL_ROOT_PASSWORD` | Compose 创建 MySQL 时使用的 root 密码 |
 | `DEEPSEEK_API_KEY` | DeepSeek 鉴权密钥 |
 | `DEEPSEEK_BASE_URL` | OpenAI 兼容 API 地址 |
@@ -191,7 +219,9 @@ RAG 检索评估：
 
 ## 当前边界
 
-- 尚未实现用户认证、权限和多租户隔离。
+完整的业务化验收项见 [升级清单](docs/PRODUCTION_ROADMAP.md)。
+
+- 当前采用每个客户空间独立的 API Key，尚未实现终端用户登录、角色权限和细粒度授权。
 - 路线时间是近邻排序和规则估算，不等同于商业地图的实时导航。
 - 天气、Overpass 和 DeepSeek 都是外部依赖，生产环境仍需限流、熔断和监控。
 - 当前 SSE 任务在 API 进程内运行；更高并发场景应迁移到独立任务队列。

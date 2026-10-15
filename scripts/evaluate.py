@@ -53,11 +53,11 @@ def evaluation_cases() -> list[dict]:
     ]
 
 
-def evaluate(limit: int) -> dict:
+def evaluate(limit: int, tenant_id: int) -> dict:
     case_results = []
 
     for case in evaluation_cases()[:limit]:
-        trip = Trip(**case)
+        trip = Trip(**case, tenant_id=tenant_id)
         started_at = perf_counter()
 
         try:
@@ -111,6 +111,11 @@ def main() -> None:
         description="Evaluate the travel planning workflow.",
     )
     parser.add_argument(
+        "--tenant-id",
+        type=int,
+        required=True,
+    )
+    parser.add_argument(
         "--limit",
         type=int,
         default=5,
@@ -123,7 +128,7 @@ def main() -> None:
     )
     args = parser.parse_args()
 
-    report = evaluate(args.limit)
+    report = evaluate(args.limit, args.tenant_id)
     args.output.parent.mkdir(parents=True, exist_ok=True)
     args.output.write_text(
         json.dumps(report, ensure_ascii=False, indent=2),

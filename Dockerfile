@@ -13,6 +13,7 @@ RUN pip install --upgrade pip \
 COPY alembic.ini .
 COPY migrations ./migrations
 COPY app ./app
+COPY scripts ./scripts
 
 RUN mkdir -p /app/data/models
 

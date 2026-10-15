@@ -14,7 +14,7 @@
 
 ### 2. 再说核心架构
 
-入口是 FastAPI。旅行记录、计划版本和执行日志存 MySQL；临时任务状态和工具结果优先存 Redis；旅游文档切分并向量化后存 Qdrant；LangGraph 把天气、景点、路线、RAG、生成、校验组织成有状态工作流；DeepSeek 只负责最后的结构化计划生成和部分查询改写。
+入口是 FastAPI，使用客户空间 API Key 鉴权。旅行记录、计划版本和执行日志存 MySQL，并按客户空间隔离；临时任务状态和工具结果优先存 Redis；旅游文档切分并向量化后存 Qdrant，向量检索按客户空间过滤；LangGraph 把天气、景点、路线、RAG、生成、校验组织成有状态工作流；DeepSeek 负责结构化计划生成和部分查询改写。
 
 ### 3. 强调为什么使用 LangGraph
 
@@ -42,6 +42,14 @@ Alembic 管理数据库迁移，Docker Compose 启动 API、MySQL、Redis 和 Qd
 
 ## 演示前检查
 
+先创建客户空间，并保存命令输出的密钥。后续请求都需要携带该密钥。
+
+```powershell
+docker compose exec api python -m scripts.manage_tenants create demo
+$apiKey = "<命令输出的密钥>"
+$headers = @{ "X-API-Key" = $apiKey }
+```
+
 ```powershell
 docker compose up -d --build
 docker compose ps
@@ -67,6 +75,7 @@ $body = @{
 $trip = Invoke-RestMethod `
     -Method Post `
     -Uri http://127.0.0.1:8000/trips `
+    -Headers $headers `
     -ContentType "application/json" `
     -Body $body
 
@@ -79,6 +88,7 @@ $trip | Format-List
 
 ```powershell
 curl.exe -X POST http://127.0.0.1:8000/knowledge/documents `
+  -H "X-API-Key: $apiKey" `
   -F "file=@.\knowledge\chengdu.md" `
   -F "city=成都"
 
@@ -91,6 +101,7 @@ $askBody = @{
 Invoke-RestMethod `
     -Method Post `
     -Uri http://127.0.0.1:8000/knowledge/ask `
+    -Headers $headers `
     -ContentType "application/json" `
     -Body $askBody | ConvertTo-Json -Depth 6
 ```
@@ -100,7 +111,7 @@ Invoke-RestMethod `
 ### 3. 流式生成计划
 
 ```powershell
-curl.exe -N -X POST "http://127.0.0.1:8000/trips/$($trip.id)/generate-plan/stream"
+curl.exe -N -X POST "http://127.0.0.1:8000/trips/$($trip.id)/generate-plan/stream" -H "X-API-Key: $apiKey"
 ```
 
 观察天气、景点、路线、知识检索、生成和校验等节点事件。最终事件应包含完整结构化计划。
@@ -108,11 +119,11 @@ curl.exe -N -X POST "http://127.0.0.1:8000/trips/$($trip.id)/generate-plan/strea
 ### 4. 查看版本和执行记录
 
 ```powershell
-Invoke-RestMethod "http://127.0.0.1:8000/trips/$($trip.id)/plans" |
+Invoke-RestMethod "http://127.0.0.1:8000/trips/$($trip.id)/plans" -Headers $headers |
     Select-Object id, version, created_at |
     Format-Table
 
-Invoke-RestMethod "http://127.0.0.1:8000/trips/$($trip.id)/executions" |
+Invoke-RestMethod "http://127.0.0.1:8000/trips/$($trip.id)/executions" -Headers $headers |
     Select-Object id, mode, status, current_node, plan_version, error |
     Format-Table
 ```
@@ -122,7 +133,8 @@ Invoke-RestMethod "http://127.0.0.1:8000/trips/$($trip.id)/executions" |
 ```powershell
 Invoke-RestMethod `
     -Method Post `
-    -Uri "http://127.0.0.1:8000/trips/$($trip.id)/plans/1/restore"
+    -Uri "http://127.0.0.1:8000/trips/$($trip.id)/plans/1/restore" `
+    -Headers $headers
 ```
 
 ## 高频面试问题
@@ -171,7 +183,7 @@ Invoke-RestMethod `
 
 ## 主动说明的项目边界
 
-面试时主动说边界反而能体现工程判断：当前没有登录鉴权和多租户；路线是近似估算而非实时导航；公共地图接口有速率限制；任务仍运行在 API 进程内；生产化下一步应加入 Celery/RQ、限流熔断、OpenTelemetry 指标和告警，以及独立前端。
+面试时主动说边界：当前使用客户空间 API Key，缺少终端用户登录和细粒度权限；路线是近似估算而非实时导航；公共地图接口有速率限制；任务仍运行在 API 进程内；生产化下一步应加入 Celery/RQ、限流熔断、OpenTelemetry 指标和告警，以及独立前端。
 
 ## 最后一句总结
 

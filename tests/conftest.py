@@ -6,8 +6,10 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import Session, sessionmaker
 from sqlalchemy.pool import StaticPool
 
+from app.auth import hash_api_key
 from app.database import Base, get_db, get_session_factory
 from app.main import create_app
+from app.models import Tenant
 
 
 @pytest.fixture()
@@ -25,6 +27,8 @@ def db_session() -> Generator[Session, None, None]:
     )
 
     with testing_session() as session:
+        session.add(Tenant(name="test-tenant", api_key_hash=hash_api_key("test-key")))
+        session.commit()
         yield session
 
     Base.metadata.drop_all(bind=engine)
@@ -44,4 +48,5 @@ def client(db_session: Session) -> Generator[TestClient, None, None]:
     )
 
     with TestClient(app) as test_client:
+        test_client.headers.update({"X-API-Key": "test-key"})
         yield test_client

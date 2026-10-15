@@ -7,6 +7,21 @@ on:
 jobs:
   pytest:
     runs-on: ubuntu-latest
+    services:
+      mysql:
+        image: mysql:8.4
+        env:
+          MYSQL_ROOT_PASSWORD: root
+          MYSQL_DATABASE: test
+          MYSQL_USER: test
+          MYSQL_PASSWORD: test
+        ports:
+          - 3306:3306
+        options: >-
+          --health-cmd="mysqladmin ping -h 127.0.0.1 -uroot -proot"
+          --health-interval=10s
+          --health-timeout=5s
+          --health-retries=10
     env:
       DB_USER: test
       DB_PASSWORD: test
@@ -16,6 +31,7 @@ jobs:
       DEEPSEEK_API_KEY: test
       DEEPSEEK_BASE_URL: https://api.deepseek.com
       DEEPSEEK_MODEL: deepseek-chat
+      RUN_MYSQL_MIGRATION_TESTS: "1"
 
     steps:
       - name: Check out repository

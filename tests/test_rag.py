@@ -1,5 +1,6 @@
 from app.schemas import KnowledgeSearchResult
 from app.services.rag import (
+    RagService,
     character_ngrams,
     extract_document_text,
     rerank_results,
@@ -107,3 +108,62 @@ def test_split_markdown_document_keeps_sections_separate():
         "## 岳麓山" in chunk and "## 橘子洲" in chunk
         for chunk in chunks
     )
+
+
+def test_search_always_filters_by_tenant():
+    class Vector:
+        def tolist(self):
+            return [0.1, 0.2]
+
+    class Embedding:
+        def query_embed(self, query):
+            yield Vector()
+
+    class Client:
+        def collection_exists(self, name):
+            return True
+
+        def query_points(self, **kwargs):
+            self.query_filter = kwargs["query_filter"]
+            return type("Response", (), {"points": []})()
+
+    service = RagService.__new__(RagService)
+    service.client = Client()
+    service._embedding = Embedding()
+
+    assert service.search(tenant_id=42, query="成都") == []
+    condition = service.client.query_filter.must[0]
+    assert condition.key == "tenant_id"
+    assert condition.match.value == 42
+
+
+def test_ingest_replaces_only_document_in_same_tenant():
+    class Vector:
+        def tolist(self):
+            return [0.1, 0.2]
+
+    class Embedding:
+        embedding_size = 2
+
+        def embed(self, chunks):
+            for _ in chunks:
+                yield Vector()
+
+    class Client:
+        def collection_exists(self, name):
+            return True
+
+        def delete(self, **kwargs):
+            self.selector = kwargs["points_selector"]
+
+        def upsert(self, **kwargs):
+            self.points = kwargs["points"]
+
+    service = RagService.__new__(RagService)
+    service.client = Client()
+    service._embedding = Embedding()
+
+    assert service.ingest(tenant_id=42, filename="same.md", content=b"text") == 1
+    conditions = {item.key: item.match.value for item in service.client.selector.must}
+    assert conditions == {"tenant_id": 42, "source": "same.md"}
+    assert service.client.points[0].payload["tenant_id"] == 42

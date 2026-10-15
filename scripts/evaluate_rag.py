@@ -1,3 +1,4 @@
+import argparse
 import json
 from pathlib import Path
 
@@ -16,7 +17,7 @@ def load_cases() -> list[dict]:
     )
 
 
-def evaluate() -> dict:
+def evaluate(tenant_id: int) -> dict:
     service = get_rag_service()
     cases = load_cases()
 
@@ -29,6 +30,7 @@ def evaluate() -> dict:
 
     for case in cases:
         results = service.search(
+            tenant_id=tenant_id,
             query=case["query"],
             city=case["city"],
             limit=TOP_K,
@@ -39,16 +41,12 @@ def evaluate() -> dict:
             expected_terms = case["expected_terms"]
 
             rank = next(
-
+                (
                     index
-                    for index, result in enumerate(
-                        results,
-                        start=1,
-                    )
-                    if all(
-                    term in result.text
-                    for term in expected_terms
-                    )
+                    for index, result in enumerate(results, start=1)
+                    if all(term in result.text for term in expected_terms)
+                ),
+                None,
             )
 
             passed = rank is not None
@@ -100,10 +98,13 @@ def evaluate() -> dict:
     }
 
 def main() -> None:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--tenant-id", type=int, required=True)
+    args = parser.parse_args()
     service = get_rag_service()
 
     try:
-        report = evaluate()
+        report = evaluate(args.tenant_id)
 
         REPORT_PATH.parent.mkdir(
             parents=True,

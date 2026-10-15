@@ -11,17 +11,18 @@ from fastapi import (
     Response,
     status,
 )
-from sqlalchemy import func, select, update
+from sqlalchemy import select, update
 from sqlalchemy.orm import Session
 from starlette.responses import StreamingResponse
 
+from ..auth import get_current_tenant
 from ..agents.travel_graph import (
     run_travel_graph,
     stream_travel_graph,
 )
 
 from ..database import get_db, get_session_factory
-from ..models import Trip, TripExecution, TripPlanHistory
+from ..models import Tenant, Trip, TripExecution, TripPlanHistory
 from ..schemas import (
     TripCreate,
     TripDetailResponse,
@@ -43,8 +44,10 @@ router = APIRouter(
 )
 STALE_EXECUTION_MINUTES = 30
 
-def get_trip_or_404(db: Session, trip_id: int) -> Trip:
-    trip = db.get(Trip, trip_id)
+def get_trip_or_404(db: Session, trip_id: int, tenant_id: int) -> Trip:
+    trip = db.scalar(
+        select(Trip).where(Trip.id == trip_id, Trip.tenant_id == tenant_id)
+    )
 
     if trip is None:
         raise HTTPException(
@@ -53,11 +56,34 @@ def get_trip_or_404(db: Session, trip_id: int) -> Trip:
         )
 
     return trip
+
+
+def lock_trip_for_mutation(db: Session, trip_id: int, tenant_id: int) -> Trip:
+    trip = db.scalar(
+        select(Trip)
+        .where(Trip.id == trip_id, Trip.tenant_id == tenant_id)
+        .with_for_update()
+        .execution_options(populate_existing=True)
+    )
+    if trip is None:
+        raise HTTPException(status_code=404, detail="Trip not found")
+    return trip
+
+
+def reject_active_planning(trip: Trip) -> None:
+    if trip.status == "planning":
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Trip planning already in progress",
+        )
+
+
 def acquire_trip_planning_lock(
     db: Session,
     trip_id: int,
+    tenant_id: int,
 ) -> Trip:
-    trip = get_trip_or_404(db, trip_id)
+    trip = get_trip_or_404(db, trip_id, tenant_id)
     now = datetime.now()
 
     if trip.status == "planning":
@@ -101,6 +127,7 @@ def acquire_trip_planning_lock(
         update(Trip)
         .where(
             Trip.id == trip_id,
+            Trip.tenant_id == tenant_id,
             Trip.status != "planning",
         )
         .values(status="planning")
@@ -121,10 +148,13 @@ def save_plan_history(
     trip: Trip,
     plan_data: dict,
 ) -> TripPlanHistory:
+    locked_trip = lock_trip_for_mutation(db, trip.id, trip.tenant_id)
     latest_version = db.scalar(
-        select(func.max(TripPlanHistory.version)).where(
-            TripPlanHistory.trip_id == trip.id
-        )
+        select(TripPlanHistory.version)
+        .where(TripPlanHistory.trip_id == trip.id)
+        .order_by(TripPlanHistory.version.desc())
+        .limit(1)
+        .with_for_update()
     )
     next_version = (latest_version or 0) + 1
 
@@ -135,7 +165,7 @@ def save_plan_history(
     )
 
     db.add(history)
-    trip.plan = plan_data
+    locked_trip.plan = plan_data
 
     return history
 
@@ -163,8 +193,9 @@ def create_trip_execution(
 def create_trip(
     trip_data: TripCreate,
     db: Session = Depends(get_db),
+    tenant: Tenant = Depends(get_current_tenant),
 ):
-    trip = Trip(**trip_data.model_dump())
+    trip = Trip(**trip_data.model_dump(), tenant_id=tenant.id)
 
     db.add(trip)
     db.commit()
@@ -183,8 +214,9 @@ def get_trips(
     skip: int = Query(default=0, ge=0),
     limit: int = Query(default=10, ge=1, le=100),
     db: Session = Depends(get_db),
+    tenant: Tenant = Depends(get_current_tenant),
 ):
-    statement = select(Trip)
+    statement = select(Trip).where(Trip.tenant_id == tenant.id)
 
     if destination is not None:
         statement = statement.where(
@@ -205,8 +237,9 @@ def get_trips(
 def get_trip(
     trip_id: int,
     db: Session = Depends(get_db),
+    tenant: Tenant = Depends(get_current_tenant),
 ):
-    return get_trip_or_404(db, trip_id)
+    return get_trip_or_404(db, trip_id, tenant.id)
 @router.get(
     "/{trip_id}/plans",
     response_model=list[TripPlanHistoryResponse],
@@ -214,8 +247,9 @@ def get_trip(
 def get_trip_plan_history(
     trip_id: int,
     db: Session = Depends(get_db),
+    tenant: Tenant = Depends(get_current_tenant),
 ):
-    get_trip_or_404(db, trip_id)
+    get_trip_or_404(db, trip_id, tenant.id)
 
     statement = (
         select(TripPlanHistory)
@@ -232,8 +266,9 @@ def get_trip_plan_history(
 def get_trip_executions(
     trip_id: int,
     db: Session = Depends(get_db),
+    tenant: Tenant = Depends(get_current_tenant),
 ):
-    get_trip_or_404(db, trip_id)
+    get_trip_or_404(db, trip_id, tenant.id)
 
     statement = (
         select(TripExecution)
@@ -250,8 +285,10 @@ def restore_trip_plan(
     trip_id: int,
     version: int = Path(ge=1),
     db: Session = Depends(get_db),
+    tenant: Tenant = Depends(get_current_tenant),
 ):
-    trip = get_trip_or_404(db, trip_id)
+    trip = lock_trip_for_mutation(db, trip_id, tenant.id)
+    reject_active_planning(trip)
 
     history = db.scalar(
         select(TripPlanHistory).where(
@@ -295,8 +332,10 @@ def update_trip(
     trip_id: int,
     trip_data: TripCreate,
     db: Session = Depends(get_db),
+    tenant: Tenant = Depends(get_current_tenant),
 ):
-    trip = get_trip_or_404(db, trip_id)
+    trip = lock_trip_for_mutation(db, trip_id, tenant.id)
+    reject_active_planning(trip)
 
     for field, value in trip_data.model_dump().items():
         setattr(trip, field, value)
@@ -315,8 +354,15 @@ def update_trip_status(
     trip_id: int,
     status_data: TripStatusUpdate,
     db: Session = Depends(get_db),
+    tenant: Tenant = Depends(get_current_tenant),
 ):
-    trip = get_trip_or_404(db, trip_id)
+    trip = lock_trip_for_mutation(db, trip_id, tenant.id)
+    reject_active_planning(trip)
+    if status_data.status != "draft":
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Planning status is managed by the server",
+        )
 
     trip.status = status_data.status
 
@@ -333,8 +379,10 @@ def update_trip_status(
 def delete_trip(
     trip_id: int,
     db: Session = Depends(get_db),
+    tenant: Tenant = Depends(get_current_tenant),
 ):
-    trip = get_trip_or_404(db, trip_id)
+    trip = lock_trip_for_mutation(db, trip_id, tenant.id)
+    reject_active_planning(trip)
 
     db.delete(trip)
     db.commit()
@@ -349,8 +397,9 @@ def delete_trip(
 def get_trip_task(
     trip_id: int,
     db: Session = Depends(get_db),
+    tenant: Tenant = Depends(get_current_tenant),
 ):
-    trip = get_trip_or_404(db, trip_id)
+    trip = get_trip_or_404(db, trip_id, tenant.id)
     task = get_task_state(trip_id)
 
     if task is not None:
@@ -369,10 +418,12 @@ def get_trip_task(
 def generate_trip_plan(
     trip_id: int,
     db: Session = Depends(get_db),
+    tenant: Tenant = Depends(get_current_tenant),
 ):
     trip = acquire_trip_planning_lock(
         db,
         trip_id,
+        tenant.id,
     )
     execution = create_trip_execution(
         db,
@@ -466,10 +517,12 @@ def generate_trip_plan_stream(
     trip_id: int,
     db: Session = Depends(get_db),
     session_factory=Depends(get_session_factory),
+    tenant: Tenant = Depends(get_current_tenant),
 ):
     trip = acquire_trip_planning_lock(
         db,
         trip_id,
+        tenant.id,
     )
     execution = create_trip_execution(
         db,
@@ -483,7 +536,7 @@ def generate_trip_plan_stream(
 
     def event_stream():
         with session_factory() as stream_db:
-            stream_trip = get_trip_or_404(stream_db, trip_id)
+            stream_trip = get_trip_or_404(stream_db, trip_id, tenant.id)
             execution = stream_db.get(
                 TripExecution,
                 execution_id,

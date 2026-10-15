@@ -22,10 +22,10 @@ def test_trip_crud(client):
 
     updated = client.patch(
         f"/trips/{trip_id}/status",
-        json={"status": "planning"},
+        json={"status": "draft"},
     )
     assert updated.status_code == 200
-    assert updated.json()["status"] == "planning"
+    assert updated.json()["status"] == "draft"
 
     deleted = client.delete(f"/trips/{trip_id}")
     assert deleted.status_code == 204
@@ -63,9 +63,11 @@ def test_create_trip_rejects_invalid_days(client):
     assert response.status_code == 422
 def test_generate_plan_rejects_duplicate_planning(
     client,
+    db_session,
     monkeypatch,
 ):
     import app.routers.trips as trips_router
+    from app.models import Trip
 
     created = client.post(
         "/trips",
@@ -79,11 +81,9 @@ def test_generate_plan_rejects_duplicate_planning(
     )
     trip_id = created.json()["id"]
 
-    status_response = client.patch(
-        f"/trips/{trip_id}/status",
-        json={"status": "planning"},
-    )
-    assert status_response.status_code == 200
+    trip = db_session.get(Trip, trip_id)
+    trip.status = "planning"
+    db_session.commit()
 
     def fail_if_called(*args, **kwargs):
         raise AssertionError("重复任务不应该启动Agent")
@@ -127,6 +127,7 @@ def test_stale_planning_execution_is_released(
     from datetime import datetime, timedelta
 
     from app.models import TripExecution
+    from app.models import Trip
     from app.routers.trips import (
         acquire_trip_planning_lock,
     )
@@ -143,10 +144,9 @@ def test_stale_planning_execution_is_released(
     )
     trip_id = created.json()["id"]
 
-    client.patch(
-        f"/trips/{trip_id}/status",
-        json={"status": "planning"},
-    )
+    trip = db_session.get(Trip, trip_id)
+    trip.status = "planning"
+    db_session.commit()
 
     old_execution = TripExecution(
         trip_id=trip_id,
@@ -164,6 +164,7 @@ def test_stale_planning_execution_is_released(
     trip = acquire_trip_planning_lock(
         db_session,
         trip_id,
+        db_session.get(Trip, trip_id).tenant_id,
     )
     db_session.commit()
     db_session.refresh(old_execution)
@@ -173,6 +174,59 @@ def test_stale_planning_execution_is_released(
     assert old_execution.current_node == "failed"
     assert "已自动释放" in old_execution.error
     assert old_execution.completed_at is not None
+
+
+def test_active_plan_blocks_mutations(client, db_session):
+    from app.models import Trip, TripPlanHistory
+
+    payload = {
+        "destination": "长沙",
+        "start_date": "2026-10-10",
+        "days": 2,
+        "budget": 2000,
+        "interests": ["美食"],
+    }
+    trip_id = client.post("/trips", json=payload).json()["id"]
+    trip = db_session.get(Trip, trip_id)
+    db_session.add(TripPlanHistory(
+        trip_id=trip_id,
+        version=1,
+        plan={
+            "destination": "长沙",
+            "summary": "原计划",
+            "total_estimated_cost": 0,
+            "days": [],
+        },
+    ))
+    trip.status = "planning"
+    db_session.commit()
+
+    responses = [
+        client.put(f"/trips/{trip_id}", json={**payload, "destination": "成都"}),
+        client.patch(f"/trips/{trip_id}/status", json={"status": "draft"}),
+        client.post(f"/trips/{trip_id}/plans/1/restore"),
+        client.delete(f"/trips/{trip_id}"),
+    ]
+    assert [response.status_code for response in responses] == [409] * 4
+    assert client.get(f"/trips/{trip_id}").json()["destination"] == "长沙"
+    assert [item["version"] for item in client.get(f"/trips/{trip_id}/plans").json()] == [1]
+
+
+def test_client_cannot_set_internal_status(client):
+    trip_id = client.post("/trips", json={
+        "destination": "长沙",
+        "start_date": "2026-10-10",
+        "days": 2,
+        "budget": 2000,
+        "interests": [],
+    }).json()["id"]
+    for internal_status in ("planning", "completed", "failed"):
+        response = client.patch(
+            f"/trips/{trip_id}/status",
+            json={"status": internal_status},
+        )
+        assert response.status_code == 409
+    assert client.get(f"/trips/{trip_id}").json()["status"] == "draft"
 def test_stream_plan_updates_database(client, monkeypatch):
     from app.schemas import GeneratedPlan
     import app.routers.trips as trips_router

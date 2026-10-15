@@ -215,6 +215,7 @@ class RagService:
 
     def ingest(
         self,
+        tenant_id: int,
         filename: str,
         content: bytes,
         city: str | None = None,
@@ -243,6 +244,7 @@ class RagService:
                     id=str(uuid4()),
                     vector=vector.tolist(),
                     payload={
+                        "tenant_id": tenant_id,
                         "text": chunk,
                         "source": filename,
                         "title": title,
@@ -255,6 +257,10 @@ class RagService:
             collection_name=COLLECTION_NAME,
             points_selector=models.Filter(
                 must=[
+                    models.FieldCondition(
+                        key="tenant_id",
+                        match=models.MatchValue(value=tenant_id),
+                    ),
                     models.FieldCondition(
                         key="source",
                         match=models.MatchValue(
@@ -274,6 +280,7 @@ class RagService:
 
     def search(
         self,
+        tenant_id: int,
         query: str,
         city: str | None = None,
         limit: int = 5,
@@ -282,17 +289,20 @@ class RagService:
             return []
 
         query_vector = next(self.embedding.query_embed(query)).tolist()
-        query_filter = None
-
-        if city:
-            query_filter = models.Filter(
-                must=[
-                    models.FieldCondition(
-                        key="city",
-                        match=models.MatchValue(value=city),
-                    )
-                ]
+        conditions = [
+            models.FieldCondition(
+                key="tenant_id",
+                match=models.MatchValue(value=tenant_id),
             )
+        ]
+        if city:
+            conditions.append(
+                models.FieldCondition(
+                    key="city",
+                    match=models.MatchValue(value=city),
+                )
+            )
+        query_filter = models.Filter(must=conditions)
 
         response = self.client.query_points(
             collection_name=COLLECTION_NAME,
