@@ -1,7 +1,7 @@
 from datetime import timedelta, timezone
 from secrets import token_hex, token_urlsafe
 
-from fastapi import APIRouter, Depends, HTTPException, Response, status
+from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
@@ -17,6 +17,7 @@ from ..auth import (
 from ..database import get_db
 from ..models import Tenant, User, UserSession
 from ..schemas import SessionTokenResponse, UserLogin, UserRegister, UserResponse
+from ..services.auth_rate_limit import AuthRateLimiter, get_auth_rate_limiter
 
 
 router = APIRouter(prefix="/auth", tags=["Accounts"])
@@ -25,7 +26,13 @@ UNKNOWN_USER_HASH = hash_password("unknown-user-placeholder")
 
 
 @router.post("/register", status_code=status.HTTP_201_CREATED, response_model=UserResponse)
-def register(payload: UserRegister, db: Session = Depends(get_db)):
+def register(
+    payload: UserRegister,
+    request: Request,
+    db: Session = Depends(get_db),
+    limiter: AuthRateLimiter = Depends(get_auth_rate_limiter),
+):
+    limiter.enforce("register:ip", request.client.host if request.client else "unknown", 5, 3600)
     if db.scalar(select(User.id).where(User.email == payload.email)) is not None:
         raise HTTPException(status_code=409, detail="Email already registered")
 
@@ -52,9 +59,14 @@ def register(payload: UserRegister, db: Session = Depends(get_db)):
 @router.post("/login", response_model=SessionTokenResponse)
 def login(
     payload: UserLogin,
+    request: Request,
     response: Response,
     db: Session = Depends(get_db),
+    limiter: AuthRateLimiter = Depends(get_auth_rate_limiter),
 ):
+    client_host = request.client.host if request.client else "unknown"
+    limiter.enforce("login:ip", client_host, 50, 900)
+    limiter.enforce("login:account", payload.email, 10, 900)
     user = db.scalar(select(User).where(User.email == payload.email))
     stored_hash = user.password_hash if user is not None else UNKNOWN_USER_HASH
     if not verify_password(payload.password, stored_hash) or user is None:

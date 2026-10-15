@@ -10,6 +10,7 @@ from app.auth import hash_api_key
 from app.database import Base, get_db, get_session_factory
 from app.main import create_app
 from app.models import Tenant
+from app.services.auth_rate_limit import AuthRateLimiter
 
 
 @pytest.fixture()
@@ -38,6 +39,7 @@ def db_session() -> Generator[Session, None, None]:
 @pytest.fixture()
 def client(db_session: Session) -> Generator[TestClient, None, None]:
     app = create_app()
+    app.state.auth_rate_limiter = AuthRateLimiter()
 
     def override_get_db():
         yield db_session

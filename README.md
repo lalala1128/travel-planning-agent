@@ -101,6 +101,8 @@ Invoke-RestMethod http://127.0.0.1:8000/trips -Headers $headers
 
 个人用户使用 `POST /auth/register` 注册（密码至少 12 字符），再通过 `POST /auth/login` 获取 24 小时有效的随机会话令牌。调用旅行和知识库接口时发送 `Authorization: Bearer <access_token>`；`GET /auth/me` 查询当前账号，`POST /auth/logout` 可立即撤销当前会话。注册时自动创建个人专属空间，不向用户暴露空间 API Key。令牌只在登录响应中显示，数据库只保存哈希。
 
+认证入口采用固定时间窗限流：同一来源地址每小时最多尝试注册 5 次；登录同一账号每 15 分钟最多尝试 10 次，同一来源地址最多尝试 50 次。超过限制返回 `429` 与 `Retry-After`。配置 `REDIS_URL` 时计数在 Redis 中跨 API 实例共享；Redis 故障时认证入口返回 `503`，不会退回到不共享的本地计数。未配置 Redis 时仅使用进程内计数，适合单实例本地开发，不适合公开多实例部署。来源地址取应用看到的连接地址，不直接信任客户端提交的转发头；部署在代理之后时需在网关正确配置可信代理和额外防护。
+
 ```powershell
 $securePassword = Read-Host "Password" -AsSecureString
 $account = @{ email = "alice@example.com"; password = [System.Net.NetworkCredential]::new("", $securePassword).Password }
