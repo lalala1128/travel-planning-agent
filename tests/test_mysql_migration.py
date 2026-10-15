@@ -41,6 +41,8 @@ def test_existing_trip_migrates_to_legacy_tenant(monkeypatch):
     command.upgrade(config, "head")
 
     with engine.connect() as connection:
+        assert sa.inspect(connection).has_table("users")
+        assert sa.inspect(connection).has_table("user_sessions")
         assert connection.scalar(sa.text(
             "SELECT COUNT(*) FROM trips AS t "
             "JOIN tenants AS o ON o.id = t.tenant_id "

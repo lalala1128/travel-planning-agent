@@ -1,6 +1,38 @@
+import re
 from typing import Any, List, Literal
 from datetime import date, datetime
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
+
+
+class UserLogin(BaseModel):
+    email: str = Field(max_length=254)
+    password: str = Field(max_length=128)
+
+    @field_validator("email")
+    @classmethod
+    def normalize_email(cls, value: str) -> str:
+        normalized = value.strip().lower()
+        if not re.fullmatch(r"[^@\s]+@[^@\s]+\.[^@\s]+", normalized):
+            raise ValueError("Invalid email address")
+        return normalized
+
+
+class UserRegister(UserLogin):
+    password: str = Field(min_length=12, max_length=128)
+
+
+class UserResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    email: str
+    created_at: datetime
+
+
+class SessionTokenResponse(BaseModel):
+    access_token: str
+    token_type: Literal["bearer"] = "bearer"
+    expires_at: datetime
 
 
 TripStatus = Literal[

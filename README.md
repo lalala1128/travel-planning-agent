@@ -10,7 +10,7 @@
 - **执行过程可观察**：支持同步生成、SSE 流式进度、Redis 状态、MySQL 执行记录和失败原因。
 - **结果可追溯**：每次成功生成都会保存计划版本，可以查询历史并恢复旧版本。
 - **工程化可交付**：Alembic 管理数据库结构，Docker Compose 启动完整依赖，pytest 和 GitHub Actions 提供回归保障。
-- **客户空间隔离**：API Key 鉴权，旅行、版本、执行记录和知识文档按客户空间隔离。
+- **个人账号与空间隔离**：个人注册登录使用可撤销 Bearer 会话；服务端仍可用 API Key，旅行与知识文档按空间隔离。
 
 ## 系统架构
 
@@ -53,6 +53,7 @@ weather -> attractions -> route -> knowledge -> generate_plan -> validate_plan
 - 同步生成、SSE 节点进度、任务状态查询
 - Redis 缓存与任务状态；Redis 不可用时回退到内存和文件缓存
 - MySQL 计划版本、历史恢复、执行记录和失败审计
+- 个人账号注册、登录、退出和 24 小时可撤销会话
 - Alembic 迁移、Docker Compose 和自动化测试
 
 ## Docker 快速启动
@@ -61,7 +62,7 @@ weather -> attractions -> route -> knowledge -> generate_plan -> validate_plan
 
 ### 从旧版本升级
 
-如果现有数据库中已有旅行记录，先备份 MySQL 和 Qdrant。升级前在 `.env` 设置一个至少 32 字符的随机 `LEGACY_TENANT_API_KEY`。迁移会把旧旅行记录归入 `legacy` 客户空间；若没有配置密钥，迁移会拒绝执行，避免旧数据被无意开放。保存该密钥，并在请求头 `X-API-Key` 中使用它访问旧数据。全新数据库不需要此配置。
+如果从最初、尚无客户空间的版本升级且数据库中已有旅行记录，先备份 MySQL 和 Qdrant，并在 `.env` 设置至少 32 字符的随机 `LEGACY_TENANT_API_KEY`。迁移会把旧旅行记录归入 `legacy` 空间。已经完成客户空间迁移的数据库升级个人账号表时，不需要重新设置该密钥。
 
 旧 Qdrant 文档没有客户空间标记，升级后不会出现在任何客户的检索结果中。使用对应客户密钥重新上传文档；旧向量需要由管理员在确认备份后清理。
 
@@ -90,13 +91,26 @@ docker compose exec api python -m scripts.manage_tenants create demo
 docker compose exec api python -m scripts.manage_tenants rotate 1
 ```
 
-除 `/health` 和 API 文档外，业务接口都需要 `X-API-Key` 请求头。在 Swagger UI 中点击 **Authorize** 填入密钥。PowerShell 示例：
+服务端集成仍可使用 `X-API-Key` 请求头。在 Swagger UI 中点击 **Authorize** 填入密钥。PowerShell 示例：
 
 ```powershell
 $apiKey = "<创建客户空间时输出的密钥>"
 $headers = @{ "X-API-Key" = $apiKey }
 Invoke-RestMethod http://127.0.0.1:8000/trips -Headers $headers
 ```
+
+个人用户使用 `POST /auth/register` 注册（密码至少 12 字符），再通过 `POST /auth/login` 获取 24 小时有效的随机会话令牌。调用旅行和知识库接口时发送 `Authorization: Bearer <access_token>`；`GET /auth/me` 查询当前账号，`POST /auth/logout` 可立即撤销当前会话。注册时自动创建个人专属空间，不向用户暴露空间 API Key。令牌只在登录响应中显示，数据库只保存哈希。
+
+```powershell
+$securePassword = Read-Host "Password" -AsSecureString
+$account = @{ email = "alice@example.com"; password = [System.Net.NetworkCredential]::new("", $securePassword).Password }
+Invoke-RestMethod http://127.0.0.1:8000/auth/register -Method Post -ContentType "application/json" -Body ($account | ConvertTo-Json)
+$session = Invoke-RestMethod http://127.0.0.1:8000/auth/login -Method Post -ContentType "application/json" -Body ($account | ConvertTo-Json)
+$userHeaders = @{ Authorization = "Bearer $($session.access_token)" }
+Invoke-RestMethod http://127.0.0.1:8000/trips -Headers $userHeaders
+```
+
+上述命令仅用于本地开发演示；公开部署前必须通过 HTTPS 传输密码和令牌，也不要把会话令牌截图或提交到 Git。
 
 - Swagger UI: <http://127.0.0.1:8000/docs>
 - Health check: <http://127.0.0.1:8000/health>
@@ -221,7 +235,7 @@ RAG 检索评估：
 
 完整的业务化验收项见 [升级清单](docs/PRODUCTION_ROADMAP.md)。
 
-- 当前采用每个客户空间独立的 API Key，尚未实现终端用户登录、角色权限和细粒度授权。
+- 当前个人账号一人一空间；已支持登录与退出，但尚无邮箱验证、密码重置、限流和共享空间的角色权限。
 - 路线时间是近邻排序和规则估算，不等同于商业地图的实时导航。
 - 天气、Overpass 和 DeepSeek 都是外部依赖，生产环境仍需限流、熔断和监控。
 - 当前 SSE 任务在 API 进程内运行；更高并发场景应迁移到独立任务队列。
